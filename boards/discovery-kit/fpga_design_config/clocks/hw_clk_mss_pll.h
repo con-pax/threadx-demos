@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2019-2024 Microchip FPGA Embedded Systems Solutions.
+ * Copyright 2019-2025 Microchip FPGA Embedded Systems Solutions.
  *
  * SPDX-License-Identifier: MIT
  *
@@ -93,11 +93,11 @@ extern  "C" {
 #endif
 #if !defined (LIBERO_SETTING_MSS_PLL_DIV_2_3)
 /*PLL 2/3 division registers */
-#define LIBERO_SETTING_MSS_PLL_DIV_2_3    0x01000300UL
+#define LIBERO_SETTING_MSS_PLL_DIV_2_3    0x01000100UL
     /* VCO2PH_SEL                        [0:3]   RO */
     /* DIV2_START                        [3:3]   RW value= 0x0 */
     /* RESERVE22                         [6:2]   RSVD */
-    /* POST2DIV                          [8:7]   RW value= 0x3 */
+    /* POST2DIV                          [8:7]   RW value= 0x1 */
     /* RESERVE23                         [15:1]  RSVD */
     /* VCO3PH_SEL                        [16:3]  RO */
     /* DIV3_START                        [19:3]  RW value= 0x0 */

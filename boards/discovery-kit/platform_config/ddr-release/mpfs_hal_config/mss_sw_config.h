@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2019-2023 Microchip FPGA Embedded Systems Solutions.
+ * Copyright 2019-2022 Microchip FPGA Embedded Systems Solutions.
  *
  * SPDX-License-Identifier: MIT
  *
@@ -61,11 +61,11 @@
  * your application to the target memory and kicks-off U54_1 to run it.
  */
 #ifndef MPFS_HAL_FIRST_HART
-#define MPFS_HAL_FIRST_HART  0
+#define MPFS_HAL_FIRST_HART  1
 #endif
 
 #ifndef MPFS_HAL_LAST_HART
-#define MPFS_HAL_LAST_HART   4
+#define MPFS_HAL_LAST_HART   1
 #endif
 
 /*
@@ -94,7 +94,7 @@
  *   MPFS_HAL_LAST_HART above
  *
  */
-#define IMAGE_LOADED_BY_BOOTLOADER 0
+#define IMAGE_LOADED_BY_BOOTLOADER 1
 #if (IMAGE_LOADED_BY_BOOTLOADER == 0)
 #define MPFS_HAL_HW_CONFIG
 #endif
@@ -115,10 +115,10 @@
 /* if this program is running on one hart only, only that particular hart value
  * will be used */
 #define HART0_TICK_RATE_MS  5UL
-#define HART1_TICK_RATE_MS  5UL
+#define HART1_TICK_RATE_MS  100UL
 #define HART2_TICK_RATE_MS  5UL
 #define HART3_TICK_RATE_MS  5UL
-#define HART4_TICK_RATE_MS  100UL
+#define HART4_TICK_RATE_MS  5UL
 
 /*
  * Define the size of the Hart Local Storage (HLS).
@@ -161,7 +161,7 @@
  * The reason you may want to use below is to save code space.
  */
 #define SGMII_SUPPORT
-//#define DDR_SUPPORT
+#define DDR_SUPPORT
 #define MSSIO_SUPPORT
 
 /*
@@ -199,7 +199,6 @@
  * #define LIBERO_SETTING_SEG0_0 0x80007F80UL
  *
  */
-#define LIBERO_SETTING_MSSIO_CONFIGURATION_OPTIONS 0
 
 #endif /* USER_CONFIG_MSS_USER_CONFIG_H_ */
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2019-2024 Microchip FPGA Embedded Systems Solutions.
+ * Copyright 2019-2025 Microchip FPGA Embedded Systems Solutions.
  *
  * SPDX-License-Identifier: MIT
  *
@@ -39,14 +39,14 @@ extern  "C" {
 #endif
 #if !defined (LIBERO_SETTING_MSS_CLOCK_CONFIG_CR)
 /*Master clock config (00=/1 01=/2 10=/4 11=/8 ) */
-#define LIBERO_SETTING_MSS_CLOCK_CONFIG_CR    0x00000024UL
+#define LIBERO_SETTING_MSS_CLOCK_CONFIG_CR    0x00010024UL
     /* DIVIDER_CPU                       [0:2]   RW value= 0x0 */
     /* DIVIDER_AXI                       [2:2]   RW value= 0x1 */
     /* DIVIDER_APB_AHB                   [4:2]   RW value= 0x2 */
     /* RESERVED                          [6:2]   RW value= 0x0 */
     /* ENABLE_1MHZ                       [8:1]   RW value= 0x0 */
     /* RESERVED1                         [9:7]   RW value= 0x0 */
-    /* MMC_CLOCK_FABRIC                  [16:1]  RW value= 0x0 */
+    /* MMC_CLOCK_FABRIC                  [16:1]  RW value= 0x1 */
     /* CAN_CLOCK_FABRIC                  [17:1]  RW value= 0x0 */
     /* RESERVED2                         [18:14] RW value= 0x0 */
 #endif
