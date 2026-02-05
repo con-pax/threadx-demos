@@ -1,0 +1,35 @@
+{
+    "version": 7,
+    "cmakeMinimumRequired": {
+      "major": 3,
+      "minor": 27,
+      "patch": 1
+    },
+    "configurePresets": [
+        {
+            "name": "default",
+            "hidden": true,
+            "displayName": "threadx: development",
+            "generator": "Ninja",
+            "binaryDir": "build",
+            "toolchainFile": "riscv_toolchain.cmake"
+        },
+        {
+            "name": "mpfs-disco-kit-smp",
+            "inherits": "default",
+            "displayName": "PolarFire SoC Discovery Kit",
+            "cacheVariables": {
+                "THREADX_SMP_PORT": "ON",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CONFIG_TARGET_MPFSOC": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "build-mpfs-disco-kit-smp",
+            "configurePreset": "mpfs-disco-kit-smp",
+            "cleanFirst": true
+        }
+    ]
+}
