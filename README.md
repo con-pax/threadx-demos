@@ -28,9 +28,9 @@ Open up a terminal on Linux, or a powershell terminal on Windows to complete the
 ### Cloning this repository
 
 ```bash
-git clone https://github.com/econnellmc/threadx-demos.git
+git clone https://github.com/con-pax/threadx-demos.git
 cd threadx-demos
-git checkout threadx_demo
+git checkout threadx_demo_smp
 
 ```
 
@@ -155,7 +155,7 @@ A fully initialized repository should look something like this:
 ### Add ThreadX fork to this directory
 
 ```bash
-git clone https://github.com/econnellmc/threadx.git
+git clone --branch riscv-64_smp https://github.com/con-pax/threadx.git
 
 ```
 
@@ -168,20 +168,20 @@ Open the `threadx-demos` folder in `VS Code` and create a new terminal in the wi
 Build commands using cmake:
 
 ```bash
-cd mpfs_threadx
-cmake --preset mpfs-disco-kit
-cmake --build --preset build-mpfs-disco-kit
+cd mpfs_threadx_smp
+cmake --preset mpfs-disco-kit-smp
+cmake --build --preset build-mpfs-disco-kit-smp
 
 ```
 
-The output elf file is located at `mpfs_threadx/build/mpfs_threadx`  
+The output elf file is located at `mpfs_threadx_smp/build/mpfs_threadx`  
 ![Output Binary](readme_images/build_location.png)
 
 ### Running on the Discovery Kit
 
 Open the Debug tab on the left hand side of the `VS Code` window and select the 'debug Flashpro 5/6 Polarfire' option, then run it by pressing the play button or `F5`. A set of prompts will appear to ask for debug parameters.
 
-- Paste the relative path of the binary (mpfs_threadx/build/mpfs_threadx)
+- Paste the relative path of the binary (mpfs_threadx_smp/build/mpfs_threadx)
 - microchip_riscv_efp5 (Discovery Kit)
 - port 3333
 ![Code running](readme_images/demo_running.png)
@@ -190,13 +190,13 @@ Open the Debug tab on the left hand side of the `VS Code` window and select the 
 
 Open the Debug tab on the left hand side of the `VS Code` window and select the 'debug-renode' option, then run it by pressing the play button or `F5`. A set of prompts will appear to ask for debug parameters.
 
-- Paste the relative path of the binary (mpfs_threadx/build/mpfs_threadx)
+- Paste the relative path of the binary (mpfs_threadx_smp/build/mpfs_threadx)
 - port 3333
 - polarfire-soc-icicle-board
 
 ## Debugging the code
 
-The threadx demo main code is running on the U54_4 application processor. This code is found in `mpfs_threadx/src/u54_4.c`.
+The threadx demo main code is running on the U54_4 application processor. This code is found in `mpfs_threadx_smp/src/u54_4.c`.
 
 To add a breakpoint using `VS Code`, open the source file and hover the cursor to the left of the Line Numbers. A red circle will appear to indicate where the breakpoint will be inserted, and clicking will create the breakpoint.
 
