@@ -45,8 +45,8 @@
             "request": "launch",
             "MIMode": "gdb",
             "linux": {
-                "miDebuggerPath":"${workspaceFolder}/riscv-none-elf-gcc/bin/riscv-none-elf-gdb",
-                "debugServerPath":"${workspaceFolder}/modules/debug/renode/renode"
+                "miDebuggerPath":"${workspaceFolder}/xpack-riscv-none-elf-gcc-14.2.0-3/bin/riscv-none-elf-gdb",
+                "debugServerPath":"${workspaceFolder}/renode/renode"
             },
             "windows": {
                 "miDebuggerPath":"${workspaceFolder}/xpack-riscv-none-elf-gcc-14.2.0-3/bin/riscv-none-elf-gdb.exe",

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2023 Microchip FPGA Embedded Systems Solutions.
+ * Copyright 2026 Microchip FPGA Embedded Systems Solutions.
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,17 +7,108 @@
  *
  * @author Microchip FPGA Embedded Systems Solutions
  *
- * @brief Application code running on U54_1.
+ * @brief Threadx SMP code running on U54_1.
  */
+
+/*
+ * The MPFSoC Threadx SMP port relies on atomic instructions for some
+ * functionality in relation to task scheduling and resource protection. For
+ * this reason it is important that any data structures and code which require
+ * the use of atomic instructions are held in cacheable memory such as
+ * the LIM scratchpad memory or cached DDR memory.
+ *
+ * This example targets the Polarfire SoC Discovoery Kit board with the default
+ * design and uses LIM scratchpad memory to keep it as self contained as
+ * possible. The default hardware design for the Discovery Kit does support
+ * DDR and some testing has been carried out with the data elements requiring
+ * atomic instructions located in DDR.
+ *
+ * The e51 is responsible for hardware initialisation including the DDR and
+ * GPIOs and synchronising the startup of the U54s. There is an additional
+ * synchronisation required to make sure U54 1 does enter the kernel until the
+ * application level init code on the e51 is complete and the GPIOs are ready
+ * for use.
+ *
+ * The example makes use of the Discovery Kit LEDs to provide some basic visual
+ * indication of system operation as follows:
+ *
+ *  - LED 1 is toggled every 16 times the timer interrupt routine is called.
+ *  - LED 2 is toggled each time thread 0 sleeps.
+ *  - LED 3 is toggled every 15,000 iterations of task 1.
+ *  - LEDs 4-7 indicate which core thread 0 is currently running on and are
+ *    updated each time the task wakes.
+ *
+ * There is optional instrumentation available using the Raspberry PI GPIO pins
+ * to allow following code execution via an oscilloscope or logic analyser. See
+ * e51().c for details of the GPIO 2 bits used and their pin numbers on the RPi
+ * connector.
+ *
+ * Threadx main source changes made to support SMP:
+ *
+ * tx_thread_initialize.c - _tx_thread_smp_protection structure is located in
+ *                          scratchpad to allow atomics work correctly.
+ *
+ * tx_timer_initialize.c  - _tx_timer_thread and _tx_timer_thread_stack_area are
+ *                          located in scratchpad to allow atomics work
+ *                          correctly.
+ *
+ * There is one code sequence which I am a little suspicious of that is used in
+ * the Threadx kernel where the _tx_thread_preempt_disable is set, the
+ * TX_RESTORE macro invoked and finally  tx_thread_system_return() is called.
+ * This leaves a brief window before calling tx_thread_system_return() where
+ * interrupts can be enabled and particularly on core 0, this gives a
+ * possibility of other kernel code being executed. I've changed this sequence
+ * to use the TX_RESTORE_INT_OFF macro instead to leave interrupts disabled but
+ * I'm not sure if it is really needed... Here are the files where the changes
+ * are made.
+ *
+ * tx_thread_relinquish.c           - enter tx_thread_system_return() with
+ *                                    interrupts off.
+ *
+ * tx_thread_smp_core_exclude.c     - enter tx_thread_system_return() with
+ *                                    interrupts off.
+ *
+ * tx_thread_system_preempt_check.c - enter tx_thread_system_return() with
+ *                                    interrupts off.
+ *
+ * tx_thread_system_resume.c        - enter tx_thread_system_return() with
+ *                                    interrupts off.
+ *
+ * tx_thread_system_suspend.c       - enter tx_thread_system_return() with
+ *                                    interrupts off.
+ *
+ * HAL changes made to support Threadx SMP
+ *
+ * mss_entry.S - added copy_scratch_code and copy_ddr_code functions to allow
+ *               placing atomic code in cacheable memory.
+ *
+ *               interrupt vector set to trap_entry which is in
+ *               tx_trap_handling.S
+ *
+ * system_startup.c - Call copy_ddr_code() once DDR is initialised. Also call
+ *                    init_global_constructors().
+ *
+ * mss_clint.c - Don't enable interrupts when setting up timer. We do it later
+ *               after kernel is initialised.
+ *
+ * mss_pll.c - copy-scratch_code called.
+ *
+ * linker script - this has sections added to support the copying to scratchpad
+ *                 and ddr.
+ */
+
 
 #include "mpfs_hal/mss_hal.h"
 #include "drivers/mss/mss_timer/mss_timer.h"
 #include "drivers/mss/mss_mmuart/mss_uart.h"
 #include "drivers/mss/mss_gpio/mss_gpio.h"
 #include "inc/uart_mapping.h"
-/* This is a small demo of the high-performance ThreadX SMP kernel.  It includes examples of eight
-   threads of different priorities, using a message queue, semaphore, mutex, event flags group,
-   byte pool, and block pool.  */
+
+/*
+ * This is a small demo of the high-performance ThreadX SMP kernel.  It includes
+ * examples of eight threads of different priorities, using a message queue,
+ * semaphore, mutex, event flags group, byte pool, and block pool.
+ */
 
 #include   "tx_api.h"
 #include   "tx_thread.h"
@@ -29,8 +120,12 @@
 #define     DEMO_QUEUE_SIZE         100
 
 
-/* Define the ThreadX object control blocks...  */
-
+/*
+ * Define the ThreadX object control blocks...
+ *
+ * The thread control blocks need to be located in cacheable memory for the
+ * AMOxx instructions to work correctly.
+ */
 TX_THREAD               thread_0  __attribute__ ((section (".l2_scratchpad")));
 TX_THREAD               thread_1  __attribute__ ((section (".l2_scratchpad")));
 TX_THREAD               thread_2  __attribute__ ((section (".l2_scratchpad")));
@@ -39,6 +134,7 @@ TX_THREAD               thread_4  __attribute__ ((section (".l2_scratchpad")));
 TX_THREAD               thread_5  __attribute__ ((section (".l2_scratchpad")));
 TX_THREAD               thread_6  __attribute__ ((section (".l2_scratchpad")));
 TX_THREAD               thread_7  __attribute__ ((section (".l2_scratchpad")));
+
 TX_QUEUE                queue_0;
 TX_SEMAPHORE            semaphore_0;
 TX_MUTEX                mutex_0;
@@ -47,18 +143,24 @@ TX_BYTE_POOL            byte_pool_0;
 TX_BLOCK_POOL           block_pool_0;
 
 
-/* Define the counters used in the demo application...  */
+/*
+ * Define the counters used in the demo application...
+ *
+ * ULONG64 needed as the thread 1 and 2 counts will overflow 32 bits in a few
+ * hours and mess up the printing in task 0.
+ *
+ */
 
-ULONG           thread_0_counter;
-ULONG           thread_1_counter;
-ULONG           thread_1_messages_sent;
-ULONG           thread_2_counter;
-ULONG           thread_2_messages_received;
-ULONG           thread_3_counter;
-ULONG           thread_4_counter;
-ULONG           thread_5_counter;
-ULONG           thread_6_counter;
-ULONG           thread_7_counter;
+ULONG64           thread_0_counter;
+ULONG64           thread_1_counter;
+ULONG64           thread_1_messages_sent;
+ULONG64           thread_2_counter;
+ULONG64           thread_2_messages_received;
+ULONG64           thread_3_counter;
+ULONG64           thread_4_counter;
+ULONG64           thread_5_counter;
+ULONG64           thread_6_counter;
+ULONG64           thread_7_counter;
 
 
 /* Define thread prototypes.  */
@@ -70,12 +172,17 @@ void    thread_3_and_4_entry(ULONG thread_input);
 void    thread_5_entry(ULONG thread_input);
 void    thread_6_and_7_entry(ULONG thread_input);
 
+#if defined (DBG_PROT_LOG)
+/*
+ * Data for debug logging of protection functionality.
+ */
 uint64_t pro_in[257];
 uint64_t pro_out[257];
 uint64_t pro_in_count = 0;
 uint64_t pro_out_count = 0;
 uint64_t pro_in_total = 0;
 uint64_t pro_out_total = 0;
+#endif
 
 extern uint64_t startup_rtos;
 
@@ -86,66 +193,21 @@ void u54_1(void)
     uint32_t hartid = read_csr(mhartid);
     uint32_t timer_load_value ;
     volatile uint64_t dummy;
-    clear_soft_interrupt();
-    set_csr(mie, MIP_MSIP);
-#if 0
-    PLIC_init();
-    //__enable_irq();
-    __disable_all_irqs();
-    /* Reset the peripherals turn on the clocks */
 
-    mss_config_clk_rst(MSS_PERIPH_MMUART_U54_1, (uint8_t) MPFS_HAL_LAST_HART, PERIPHERAL_ON);
-    mss_config_clk_rst(MSS_PERIPH_TIMER, (uint8_t) MPFS_HAL_LAST_HART, PERIPHERAL_ON);
-
-    /* GPIO2 Pad Interrupt initializarion */
-    /*------------------------------------------*/
-    mss_config_clk_rst(MSS_PERIPH_GPIO2, 1, PERIPHERAL_ON) ;
-    MSS_GPIO_init(GPIO2_LO) ;
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_13, MSS_GPIO_INPUT_MODE |
-                    MSS_GPIO_IRQ_EDGE_POSITIVE );
-    MSS_GPIO_enable_irq(GPIO2_LO, MSS_GPIO_13);
-    SYSREG->GPIO_INTERRUPT_FAB_CR = 0xFFFFFFFFUL;
-
-    /*------------------------------------------*/
-//    MSS_UART_init( p_uartmap_u54_1,
-//                   MSS_UART_115200_BAUD,
-//                   MSS_UART_DATA_8_BITS | MSS_UART_NO_PARITY | MSS_UART_ONE_STOP_BIT);
-
-//    MSS_UART_polled_tx_string(p_uartmap_u54_1, "U54_4 UART \r\n");
-
-    PLIC_SetPriority(TIMER1_PLIC, 2);
-    PLIC_SetPriority(TIMER2_PLIC, 2);
-    PLIC_SetPriority(GPIO0_BIT13_or_GPIO2_BIT13_PLIC_13,7) ;
-    PLIC_EnableIRQ(GPIO0_BIT13_or_GPIO2_BIT13_PLIC_13) ;
-
-//    MSS_GPIO_init(GPIO2_LO);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_17, MSS_GPIO_OUTPUT_MODE);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_18, MSS_GPIO_OUTPUT_MODE);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_19, MSS_GPIO_OUTPUT_MODE);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_20, MSS_GPIO_OUTPUT_MODE);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_21, MSS_GPIO_OUTPUT_MODE);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_22, MSS_GPIO_OUTPUT_MODE);
-    MSS_GPIO_config(GPIO2_LO, MSS_GPIO_23, MSS_GPIO_OUTPUT_MODE);
-
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_17, 1);
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_18, 1);
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_19, 1);
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_20, 1);
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_21, 1);
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_22, 1);
-    MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_23, 1);
-#endif
-//    set_csr(mie, MIP_MEIP);
-    SysTick_Config();
-
+    /*
+     * Wait around until e51 is done setting up HW etc.
+     */
     while(0 == startup_rtos)
     {
         dummy++;
     }
+
+    set_csr(mie, MIP_MSIP);
+    SysTick_Config();
+
     tx_kernel_enter();
 
-    while(1);
-
+    while(1); /* Should never get here... */
 }
 
 
@@ -153,11 +215,7 @@ void u54_1(void)
 
 void    tx_application_define(void *first_unused_memory)
 {
-
-CHAR    *pointer = TX_NULL;
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 256;
-#endif
+    CHAR    *pointer = TX_NULL;
 
     /* Create a byte memory pool from which to allocate the thread stacks.  */
     tx_byte_pool_create(&byte_pool_0, "byte pool 0", first_unused_memory, DEMO_BYTE_POOL_SIZE);
@@ -257,32 +315,25 @@ CHAR    *pointer = TX_NULL;
 
     /* Release the block back to the pool.  */
     tx_block_release(pointer);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 256;
-#endif
-
 }
-
 
 
 /* Define the test threads.  */
 
 void    thread_0_entry(ULONG thread_input)
 {
+    volatile uint64_t dummy;
     TX_INTERRUPT_SAVE_AREA
-
-UINT    status;
-
+    UINT    status;
 
     /* This thread simply sits in while-forever-sleep loop.  */
     while(1)
     {
-
         /* Increment the thread counter.  */
         thread_0_counter++;
 
         /* Print results.  */
-        printf("**** ThreadX SMP Linux Demonstration **** (c) 1996-2020 Microsoft Corporation\r\n\r\n");
+        printf("**** ThreadX SMP MPFSoC Demonstration ****\r\n\r\n");
         printf("           thread 0 events sent:          %lu\r\n", thread_0_counter);
         printf("           thread 1 messages sent:        %lu\r\n", thread_1_counter);
         printf("           thread 2 messages received:    %lu\r\n", thread_2_counter);
@@ -292,8 +343,16 @@ UINT    status;
         printf("           thread 6 mutex obtained:       %lu\r\n", thread_6_counter);
         printf("           thread 7 mutex obtained:       %lu\r\n\n", thread_7_counter);
 
-        /* Sleep for 10 ticks.  */
-
+        /*
+         * Provide visible display of task 0 activity.
+         *
+         * LEDs 4-7 are used to display which hart task 0 is currently running
+         * on and give a visible indication of how the task moves from hart to
+         * hart as the scheduling operates.
+         *
+         * LED 2 is turned on before sleeping and off when we return to show how
+         * frequently the task executes.
+         */
         TX_DISABLE
         MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_18, 1);
         MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_20, 0);
@@ -303,83 +362,55 @@ UINT    status;
         MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_20 + _tx_thread_smp_core_get(), 1);
         TX_RESTORE
 
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 4;
-#endif
-
+        /* Sleep for 10 ticks.  */
         tx_thread_sleep(10);
 
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 4;
-#endif
         TX_DISABLE
         MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_18, 0);
         TX_RESTORE
 
         /* Set event flag 0 to wakeup thread 5.  */
         status =  tx_event_flags_set(&event_flags_0, 0x1, TX_OR);
-        if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-        {
-            volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-            dummy++;
-        }
-
 
         /* Check status.  */
         if (status != TX_SUCCESS)
             break;
+    }
+
+    while(1)
+    {
+        dummy++;
     }
 }
 
 
 void    thread_1_entry(ULONG thread_input)
 {
-volatile uint64_t dummy;
-UINT    status;
-TX_INTERRUPT_SAVE_AREA
-
+    volatile uint64_t dummy;
+    UINT    status;
+    TX_INTERRUPT_SAVE_AREA
 
     /* This thread simply sends messages to a queue shared by thread 2.  */
     while(1)
     {
-
         /* Increment the thread counter.  */
         thread_1_counter++;
 
-//        dummy = 0;
-//        while(dummy!=50)
-//            dummy++;
-
-//        TX_DISABLE
-//        MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_19, (thread_1_counter & 1024) >> 10);
-//        MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_20, (thread_1_counter & 2048) >> 11);
-//        MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_21, (thread_1_counter & 4096) >> 12);
-//        MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_19, (thread_1_counter & 8192) >> 13);
-//        TX_RESTORE
         /* Send message to queue 0.  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 8;
-#endif
         status =  tx_queue_send(&queue_0, &thread_1_messages_sent, TX_WAIT_FOREVER);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 8;
-#endif
-//        if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-//        {
-//            volatile int dummy;
-//#if defined(DBG_ANNO_2H)
-//            *((uint32_t *)0x201220a0) = 4;
-//#endif
-//            dummy++;
-//        }
 
         /* Check completion status.  */
         if (status != TX_SUCCESS)
             break;
 
+        /*
+         * We need a forced delay here because on a 4 core system, thread 1 and
+         * 2 will flood the system with messages and cause the scheduling to
+         * break down. I believe this is due to the amount of time that the
+         * system spends in the protection code with scheduling locked out
+         * because the tasks can generate thousands (or even tens of thousands)
+         * of messages per second.
+         */
         while((dummy % 1024) != 0)
         {
             dummy++;
@@ -388,50 +419,32 @@ TX_INTERRUPT_SAVE_AREA
 
         /* Increment the message sent.  */
         thread_1_messages_sent++;
+
+        /* Flash LED 1 periodically to show timer interrupt activity */
+        MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_19, ((thread_1_counter % 30000) > 15000) & 1);
     }
 
     while(1)
     {
         dummy++;
     }
-
 }
 
 
 void    thread_2_entry(ULONG thread_input)
 {
     volatile uint32_t dummy;
-
-ULONG   received_message;
-UINT    status;
+    ULONG   received_message;
+    UINT    status;
 
     /* This thread retrieves messages placed on the queue by thread 1.  */
     while(1)
     {
- //               dummy = 0;
-//                while(dummy!=50)
-//                    dummy++;
-
         /* Increment the thread counter.  */
         thread_2_counter++;
 
         /* Retrieve a message from the queue.  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 16;
-#endif
         status = tx_queue_receive(&queue_0, &received_message, TX_WAIT_FOREVER);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 16;
-#endif
-        if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-        {
-            volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-            dummy++;
-        }
-
 
         /* Check completion status and make sure the message is what we
            expected.  */
@@ -440,29 +453,24 @@ UINT    status;
 
         /* Otherwise, all is okay.  Increment the received message count.  */
         thread_2_messages_received++;
-//        tx_thread_sleep(1);
     }
 
     while(1)
     {
         dummy++;
     }
-
 }
 
 
 void    thread_3_and_4_entry(ULONG thread_input)
 {
     volatile uint32_t dummy;
-
-UINT    status;
-
+    UINT    status;
 
     /* This function is executed from thread 3 and thread 4.  As the loop
        below shows, these function compete for ownership of semaphore_0.  */
     while(1)
     {
-
         /* Increment the thread counter.  */
         if (thread_input == 3)
             thread_3_counter++;
@@ -476,22 +484,7 @@ UINT    status;
          * disabled momentarily...
          *
          *  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 32;
-#endif
         status =  tx_semaphore_get(&semaphore_0, TX_WAIT_FOREVER);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 32;
-#endif
-        if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-        {
-            volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-            dummy++;
-        }
-
 
         /* Check status.  */
         if ((status != TX_SUCCESS) && (status != TX_NO_INSTANCE))
@@ -500,107 +493,61 @@ UINT    status;
         if (status != TX_NO_INSTANCE)
         {
             /* Sleep for 2 ticks to hold the semaphore.  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 32;
-#endif
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 32;
-#endif
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 32;
-#endif
             tx_thread_sleep(2);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 32;
-#endif
 
             /* Release the semaphore.  */
             status =  tx_semaphore_put(&semaphore_0);
-            if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-            {
-                volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-                dummy++;
-            }
-
-
-            /* Check status.  */
-//            if (status != TX_SUCCESS)
-//                break;
         }
 
         /* Check status.  */
         if ((status != TX_SUCCESS) && (status != TX_NO_INSTANCE))
             break;
     }
+
     while(1)
     {
         dummy++;
     }
-
 }
 
 
 void    thread_5_entry(ULONG thread_input)
 {
     volatile uint32_t dummy;
-
-UINT    status;
-ULONG   actual_flags;
-
+    UINT    status;
+    ULONG   actual_flags;
 
     /* This thread simply waits for an event in a forever loop.  */
     while(1)
     {
-
         /* Increment the thread counter.  */
         thread_5_counter++;
 
         /* Wait for event flag 0.  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 64;
-#endif
         status =  tx_event_flags_get(&event_flags_0, 0x1, TX_OR_CLEAR,
                                                 &actual_flags, TX_WAIT_FOREVER);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 64;
-#endif
-        if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-        {
-            volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-            dummy++;
-        }
-
 
         /* Check status.  */
         if (((status != TX_SUCCESS) && (status != TX_NO_EVENTS)) || (actual_flags != 0x1))
             break;
     }
+
     while(1)
     {
         dummy++;
     }
-
 }
 
 
 void    thread_6_and_7_entry(ULONG thread_input)
 {
     volatile uint32_t dummy;
-
-UINT    status;
-
+    UINT    status;
 
     /* This function is executed from thread 6 and thread 7.  As the loop
        below shows, these function compete for ownership of mutex_0.  */
     while(1)
     {
-
         /* Increment the thread counter.  */
         if (thread_input == 6)
             thread_6_counter++;
@@ -608,22 +555,7 @@ UINT    status;
             thread_7_counter++;
 
         /* Get the mutex with suspension.  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 128;
-#endif
         status =  tx_mutex_get(&mutex_0, TX_WAIT_FOREVER);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 128;
-#endif
-
-        if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-        {
-            volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-            dummy++;
-        }
 
         /* Check status.  */
         if ((status != TX_SUCCESS) && (status != TX_NOT_AVAILABLE))
@@ -635,50 +567,13 @@ UINT    status;
                that an owning thread may retrieve the mutex it
                owns multiple times.  */
             status =  tx_mutex_get(&mutex_0, TX_WAIT_FOREVER);
-            if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-            {
-                volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-                dummy++;
-            }
-
             /* Check status.  */
             if (status != TX_SUCCESS)
                 break;
-
-            if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-            {
-                volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-                dummy++;
-            }
-
             /* Sleep for 2 ticks to hold the mutex.  */
             tx_thread_sleep(2);
-            if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-            {
-                volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-                dummy++;
-            }
-
             /* Release the mutex.  */
             status =  tx_mutex_put(&mutex_0);
-            if(_tx_thread_smp_protection.tx_thread_smp_protect_count > 1)
-            {
-                volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-                dummy++;
-            }
-
 
             /* Check status.  */
             if (status != TX_SUCCESS)
@@ -686,27 +581,7 @@ UINT    status;
 
             /* Release the mutex again.  This will actually
                release ownership since it was obtained twice.  */
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 128;
-#endif
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 128;
-#endif
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a0) = 128;
-#endif
             status =  tx_mutex_put(&mutex_0);
-#if defined(DBG_ANNO_4H)
-        *((uint32_t *)0x201220a4) = 128;
-#endif
-            if((_tx_thread_smp_protection.tx_thread_smp_protect_count == 1) && (_tx_thread_smp_protection.tx_thread_smp_protect_core == _tx_thread_smp_core_get()))
-            {
-                volatile int dummy;
-#if defined(DBG_ANNO_2H)
-            *((uint32_t *)0x201220a0) = 4;
-#endif
-                dummy++;
-            }
 
             /* Check status.  */
             if (status != TX_SUCCESS)
@@ -718,7 +593,6 @@ UINT    status;
     {
         dummy++;
     }
-
 }
 
 
@@ -729,22 +603,8 @@ void SysTick_Handler_h1_IRQHandler()
     MSS_TIM1_clear_irq(TIMER_LO);
 
     value++;
-/*
-    if(0u == value)
-    {
-        value = 0x01u;
-    }
-    else
-    {
-        value = 0x00u;
-    }
-*/
 
+    /* Flash LED 1 periodically to show timer interrupt activity */
     MSS_GPIO_set_output(GPIO2_LO, MSS_GPIO_17, (value >> 4) & 1);
 }
 
-/* hart1 Software interrupt handler */
-void Software_h1_IRQHandler(void)
-{
-    uint64_t hart_id = read_csr(mhartid);
-}
