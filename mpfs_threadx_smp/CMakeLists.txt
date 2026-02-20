@@ -6,6 +6,10 @@ set(THREADX_TOOLCHAIN "gnu")
 
 # Add ThreadX as a subdirectory
 add_subdirectory(${CMAKE_SOURCE_DIR}/../threadx ${CMAKE_BINARY_DIR}/threadx)
+target_include_directories(threadx PRIVATE
+  ${CMAKE_SOURCE_DIR}/platform
+  ${CMAKE_SOURCE_DIR}/../boards/discovery-kit
+)
 
 # Add the source files
 add_executable(mpfs_threadx
